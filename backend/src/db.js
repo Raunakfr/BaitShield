@@ -136,6 +136,7 @@ const db = {
 
   // Assets
   getAllAssets: () => store.assets,
+  getAssetById: (id) => store.assets.find(a => a.id === id) || null,
 
   // Decoys (PLANT & DETECT)
   getAllDecoys: () => store.decoys.map(d => {

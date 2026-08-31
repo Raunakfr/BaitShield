@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 
-export function useWebSocket(url, onMessage) {
+export function useWebSocket(urlOrCallback, callback) {
+  let wsUrl = typeof urlOrCallback === 'string' ? urlOrCallback : null;
+  let onMessage = typeof urlOrCallback === 'function' ? urlOrCallback : callback;
+
+  if (!wsUrl) {
+    const host = typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : 'localhost';
+    wsUrl = `ws://${host}:3001`;
+  }
+
   const [connected, setConnected] = useState(false);
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -12,7 +20,7 @@ export function useWebSocket(url, onMessage) {
   }, [onMessage]);
 
   useEffect(() => {
-    if (!url) return;
+    if (!wsUrl) return;
 
     const connect = () => {
       // Prevent opening duplicate WebSocket connections
@@ -20,34 +28,38 @@ export function useWebSocket(url, onMessage) {
         return;
       }
 
-      wsRef.current = new WebSocket(url);
+      try {
+        wsRef.current = new WebSocket(wsUrl);
 
-      wsRef.current.onopen = () => {
-        setConnected(true);
-      };
+        wsRef.current.onopen = () => {
+          setConnected(true);
+        };
 
-      wsRef.current.onmessage = (event) => {
-        try {
-          const parsed = JSON.parse(event.data);
-          if (onMessageRef.current) {
-            onMessageRef.current(parsed);
+        wsRef.current.onmessage = (event) => {
+          try {
+            const parsed = JSON.parse(event.data);
+            if (onMessageRef.current) {
+              onMessageRef.current(parsed);
+            }
+          } catch (error) {
+            console.error('Failed to parse WebSocket message:', error);
           }
-        } catch (error) {
-          console.error('Failed to parse WebSocket message:', error);
-        }
-      };
+        };
 
-      wsRef.current.onclose = () => {
-        setConnected(false);
-        reconnectTimeoutRef.current = setTimeout(connect, 2000);
-      };
+        wsRef.current.onclose = () => {
+          setConnected(false);
+          reconnectTimeoutRef.current = setTimeout(connect, 2000);
+        };
 
-      wsRef.current.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        if (wsRef.current) {
-          wsRef.current.close();
-        }
-      };
+        wsRef.current.onerror = (error) => {
+          console.error('WebSocket connection error:', error);
+          if (wsRef.current) {
+            wsRef.current.close();
+          }
+        };
+      } catch (e) {
+        console.error('WebSocket initialization error:', e);
+      }
     };
 
     connect();
@@ -61,7 +73,7 @@ export function useWebSocket(url, onMessage) {
         wsRef.current = null;
       }
     };
-  }, [url]);
+  }, [wsUrl]);
 
   return { connected };
 }

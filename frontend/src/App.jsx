@@ -54,25 +54,19 @@ export default function App() {
         getLegitimateLogs().catch(() => [])
       ]);
 
-      setCoverage(covData);
-      setDecoys(decoyData);
-      setLegitimateLogs(legitData || []);
-      
-      if (traceData && traceData.length > 0) {
-        setAlerts(traceData.slice());
-      } else {
-        setAlerts([]);
-      }
+      setCoverage(covData && typeof covData.percentage === 'number' ? covData : { percentage: 0, covered: 0, total: 0 });
+      setDecoys(Array.isArray(decoyData) ? decoyData : []);
+      setLegitimateLogs(Array.isArray(legitData) ? legitData : []);
+      setAlerts(Array.isArray(traceData) ? traceData : []);
+      setIncidents(Array.isArray(incidentData) ? incidentData : []);
 
-      if (graph && graph.nodes) {
+      if (graph && Array.isArray(graph.nodes)) {
         setGraphData({
           nodes: graph.nodes,
-          links: graph.edges ? graph.edges.map(e => ({ source: e.source, target: e.target, ...e })) : []
+          links: Array.isArray(graph.edges) ? graph.edges.map(e => ({ source: e.source, target: e.target, ...e })) : []
         });
-      }
-
-      if (incidentData && Array.isArray(incidentData)) {
-        setIncidents(incidentData);
+      } else {
+        setGraphData({ nodes: [], links: [] });
       }
     } catch (e) {
       console.error('Error fetching initial data:', e);
@@ -85,46 +79,76 @@ export default function App() {
     }
   }, [user]);
 
-  const handleWebSocketMessage = useCallback(async (msg) => {
-    if (msg.type === 'alert') {
+  // Handle incoming real-time WebSocket events
+  const handleWebSocketMessage = useCallback((msg) => {
+    if (msg.type === 'alert' && msg.data) {
+      const newAlert = msg.data;
       setAlerts(prev => {
-        if (prev.some(a => a.id === msg.data.id)) return prev;
-        return [msg.data, ...prev];
+        const safePrev = Array.isArray(prev) ? prev : [];
+        if (safePrev.some(a => a.id === newAlert.id)) return safePrev;
+        return [newAlert, ...safePrev];
       });
 
-      try {
-        const [graph, cov, updatedDecoys] = await Promise.all([
-          getTraceGraph(),
-          getCoverage(),
-          getDecoys()
-        ]);
-        if (graph && graph.nodes) {
-          setGraphData({
-            nodes: graph.nodes,
-            links: graph.edges ? graph.edges.map(e => ({ source: e.source, target: e.target, ...e })) : []
+      setGraphData(prev => {
+        const nodes = Array.isArray(prev.nodes) ? [...prev.nodes] : [];
+        const links = Array.isArray(prev.links) ? [...prev.links] : [];
+
+        const attackerIp = newAlert.source_ip || '192.168.1.200';
+        let attackerNode = nodes.find(n => n.type === 'attacker');
+        if (!attackerNode) {
+          attackerNode = { id: 'attacker', label: `Attacker (${attackerIp})`, ip: attackerIp, type: 'attacker' };
+          nodes.push(attackerNode);
+        }
+
+        const decoyNodeId = `decoy-${newAlert.decoy_id}`;
+        let decoyNode = nodes.find(n => n.id === decoyNodeId);
+        if (!decoyNode) {
+          decoyNode = {
+            id: decoyNodeId,
+            label: newAlert.decoy_name || newAlert.decoy_id,
+            type: 'decoy',
+            path: newAlert.decoy_path,
+            severity: newAlert.severity
+          };
+          nodes.push(decoyNode);
+        }
+
+        const edgeId = `edge-${newAlert.id}`;
+        if (!links.some(l => l.id === edgeId)) {
+          const lastNodeId = nodes[nodes.length - 2]?.id || 'attacker';
+          links.push({
+            id: edgeId,
+            source: lastNodeId,
+            target: decoyNodeId,
+            label: newAlert.action
           });
         }
-        setCoverage(cov);
-        setDecoys(updatedDecoys);
-      } catch (e) {
-        console.error('Error updating after alert:', e);
-      }
-    } else if (msg.type === 'incident') {
-      setIncidents(prev => [msg.data, ...prev]);
+
+        return { nodes, links };
+      });
+
+      setDecoys(prev => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        return safePrev.map(d => d.id === newAlert.decoy_id ? { ...d, triggered: true } : d);
+      });
+    } else if (msg.type === 'incident' && msg.data) {
+      setIncidents(prev => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        if (safePrev.some(inc => inc.id === msg.data.id)) return safePrev;
+        return [msg.data, ...safePrev];
+      });
       setSimulating(false);
-    } else if (msg.type === 'legitimate_activity') {
-      setLegitimateLogs(prev => [msg.data, ...prev]);
+    } else if (msg.type === 'legitimate_activity' && msg.data) {
+      setLegitimateLogs(prev => [msg.data, ...(Array.isArray(prev) ? prev : [])]);
       setLegitimateSimulating(false);
     } else if (msg.type === 'reset') {
-      setAlerts([]);
-      setIncidents([]);
-      setLegitimateLogs([]);
-      setGraphData({ nodes: [], links: [] });
       fetchInitialData();
+      setSimulating(false);
+      setLegitimateSimulating(false);
     }
   }, []);
 
-  const { connected } = useWebSocket(user ? 'ws://localhost:3001' : null, handleWebSocketMessage);
+  const { connected } = useWebSocket(handleWebSocketMessage);
 
   const handleLoginSuccess = (userData) => {
     setUser(userData);
@@ -158,8 +182,8 @@ export default function App() {
     setLegitimateSimulating(true);
     try {
       const res = await simulateLegitimate();
-      if (res && res.logs) {
-        setLegitimateLogs(prev => [...res.logs, ...prev]);
+      if (res && Array.isArray(res.logs)) {
+        setLegitimateLogs(prev => [...res.logs, ...(Array.isArray(prev) ? prev : [])]);
       }
     } catch (e) {
       console.error('Legitimate simulation failed:', e);
@@ -181,26 +205,22 @@ export default function App() {
     }
   };
 
+  const handleDeleteDecoy = async (id) => {
+    try {
+      await deleteDecoy(id);
+      await fetchInitialData();
+    } catch (e) {
+      console.error('Delete decoy failed:', e);
+    }
+  };
+
   const handleOpenPlantForAsset = (assetId) => {
-    setPreselectedAssetId(assetId);
+    setPreselectedAssetId(assetId || '');
     setPlantModalOpen(true);
   };
 
   const handleDecoyPlanted = async () => {
-    const [cov, updatedDecoys] = await Promise.all([getCoverage(), getDecoys()]);
-    setCoverage(cov);
-    setDecoys(updatedDecoys);
-  };
-
-  const handleDeleteDecoy = async (id) => {
-    try {
-      await deleteDecoy(id);
-      const [cov, updatedDecoys] = await Promise.all([getCoverage(), getDecoys()]);
-      setCoverage(cov);
-      setDecoys(updatedDecoys);
-    } catch (e) {
-      console.error('Delete decoy failed:', e);
-    }
+    await fetchInitialData();
   };
 
   if (!user) {
